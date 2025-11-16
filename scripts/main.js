@@ -779,6 +779,12 @@ function setupEventListeners() {
         searchInput.addEventListener('input', handleSearch);
     }
 
+    // File filter buttons
+    const filterButtons = document.querySelectorAll('.filter-btn');
+    filterButtons.forEach(button => {
+        button.addEventListener('click', handleFilterClick);
+    });
+
     // Add storage management event listeners
     const optimizeStorageBtn = document.getElementById('optimizeStorageBtn');
     const clearCacheBtn = document.getElementById('clearCacheBtn');
@@ -833,17 +839,57 @@ function handleFileSelection(e) {
 function handleSearch(e) {
     const query = e.target.value.toLowerCase();
     const fileCards = filesGrid.querySelectorAll('.file-card');
-    
+
     fileCards.forEach(card => {
         const fileName = card.querySelector('.file-name').textContent.toLowerCase();
         const fileCategory = card.querySelector('.file-category').textContent.toLowerCase();
-        
+
         if (fileName.includes(query) || fileCategory.includes(query)) {
             card.style.display = 'block';
         } else {
             card.style.display = 'none';
         }
     });
+}
+
+// Handle file filter button clicks
+function handleFilterClick(e) {
+    const clickedButton = e.currentTarget;
+    const filterType = clickedButton.getAttribute('data-filter');
+
+    // Update active state on filter buttons
+    const allFilterButtons = document.querySelectorAll('.filter-btn');
+    allFilterButtons.forEach(btn => btn.classList.remove('active'));
+    clickedButton.classList.add('active');
+
+    // Filter the file cards
+    const fileCards = filesGrid.querySelectorAll('.file-card');
+
+    fileCards.forEach(card => {
+        const cardFileType = card.getAttribute('data-file-type');
+
+        // Show all files or filter by type
+        if (filterType === 'all') {
+            card.style.display = 'block';
+            card.style.animation = 'fadeIn 0.3s ease-out';
+        } else if (cardFileType === filterType) {
+            card.style.display = 'block';
+            card.style.animation = 'fadeIn 0.3s ease-out';
+        } else {
+            card.style.display = 'none';
+        }
+    });
+
+    // Show notification about filter
+    const visibleCards = Array.from(fileCards).filter(card => card.style.display !== 'none').length;
+    const filterLabels = {
+        'all': 'ALL_FILES',
+        'media': 'MEDIA_FILES',
+        'json': 'DATABASE_FILES',
+        'other': 'OTHER_FILES'
+    };
+
+    showNotification(`SHOWING_${visibleCards}_${filterLabels[filterType]}`, 'success');
 }
 
 // Enhanced file processing
@@ -1161,6 +1207,10 @@ function createFileCard(file) {
     const card = document.createElement('div');
     card.className = 'file-card';
 
+    // Determine file type for filtering
+    const fileType = getFileTypeForFilter(file.category);
+    card.setAttribute('data-file-type', fileType);
+
     // Check if file was compressed
     const compressionInfo = file.metadata?.compressed ?
         `<span class="compression-badge" title="Original: ${formatFileSize(file.metadata.originalSize)}">📦 COMPRESSED</span>` : '';
@@ -1182,6 +1232,26 @@ function createFileCard(file) {
         </div>
     `;
     return card;
+}
+
+// Helper function to determine file type for filtering
+function getFileTypeForFilter(category) {
+    // Media files - images, videos, audio
+    if (category.includes('MEDIA_IMAGE') ||
+        category.includes('MEDIA_VIDEO') ||
+        category.includes('MEDIA_AUDIO') ||
+        category.includes('MEDIA_')) {
+        return 'media';
+    }
+
+    // JSON/Database files
+    if (category.includes('JSON') ||
+        category.includes('DATABASE')) {
+        return 'json';
+    }
+
+    // Everything else
+    return 'other';
 }
 
 // Format category label for user-friendly display
