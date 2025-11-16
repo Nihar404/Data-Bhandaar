@@ -1,39 +1,90 @@
-// Firebase-Enhanced Authentication System for Cross-Device Login
-// This version uses Firebase Authentication to enable login across multiple devices
+/**
+ * ============================================================================
+ * FIREBASE AUTHENTICATION SYSTEM
+ * ============================================================================
+ *
+ * PURPOSE:
+ * This system provides cloud-based authentication using Firebase, allowing users
+ * to login from multiple devices and have their data synchronized across platforms.
+ *
+ * KEY FEATURES:
+ * - Cross-device login (login on phone, continue on laptop)
+ * - Cloud-based user management via Firebase
+ * - Automatic fallback to local storage if Firebase is unavailable
+ * - Session persistence and state management
+ * - Secure PIN-based authentication (4 digits)
+ *
+ * HOW IT WORKS:
+ * 1. Converts usernames to email format (username@databhandaar.local) for Firebase
+ * 2. Uses Firebase Authentication API for user creation and login
+ * 3. Stores session data locally for quick access
+ * 4. Listens to Firebase auth state changes for real-time updates
+ *
+ * INTERVIEW TIP:
+ * Explain that Firebase allows the app to work across devices while maintaining
+ * a simple 4-digit PIN system instead of complex passwords.
+ * ============================================================================
+ */
 
 class FirebaseAuthSystem {
+    /**
+     * Constructor - Initializes the Firebase authentication system
+     *
+     * PROPERTIES:
+     * @property {Object} auth - Firebase authentication instance
+     * @property {Object} currentUser - Currently logged in Firebase user
+     * @property {Object} storageSystem - Reference to the storage manager
+     */
     constructor() {
-        this.auth = null;
-        this.currentUser = null;
-        this.storageSystem = null;
-        this.init();
+        this.auth = null;              // Will hold Firebase Auth instance
+        this.currentUser = null;       // Currently authenticated user
+        this.storageSystem = null;     // Storage system (initialized separately)
+        this.init();                   // Start initialization process
     }
 
+    /**
+     * Initialize Firebase Authentication
+     *
+     * PROCESS:
+     * 1. Check if Firebase SDK is loaded
+     * 2. Initialize Firebase app with config from firebase-config.js
+     * 3. Set up auth state listener (monitors login/logout events)
+     * 4. Set up appropriate page listeners based on current page
+     *
+     * FALLBACK:
+     * If Firebase fails, falls back to localStorage-based authentication
+     */
     async init() {
         console.log('Initializing Firebase Auth System...');
 
         // Initialize Firebase
         try {
+            // Check if Firebase SDK is loaded from CDN
             if (typeof firebase === 'undefined') {
                 console.error('Firebase SDK not loaded. Please include Firebase scripts in HTML.');
                 this.fallbackToLocalStorage();
                 return;
             }
 
-            // Initialize Firebase app
+            // Initialize Firebase app with config (only if not already initialized)
             if (!firebase.apps.length) {
                 firebase.initializeApp(window.firebaseConfig);
                 console.log('Firebase initialized successfully');
             }
 
-            // Get Auth instance
+            // Get Firebase Authentication instance
             this.auth = firebase.auth();
 
-            // Set up auth state listener
+            /**
+             * Auth State Listener - Monitors authentication changes
+             * This fires whenever user logs in, logs out, or refreshes page
+             * Allows real-time sync across devices
+             */
             this.auth.onAuthStateChanged((user) => {
                 console.log('Auth state changed:', user ? user.email : 'No user');
                 this.currentUser = user;
 
+                // If user is logged in and we're not on login page, update session
                 if (user && !window.location.pathname.includes('login.html')) {
                     this.handleAuthenticatedUser(user);
                 }
@@ -41,34 +92,49 @@ class FirebaseAuthSystem {
 
         } catch (error) {
             console.error('Firebase initialization error:', error);
-            this.fallbackToLocalStorage();
+            this.fallbackToLocalStorage();  // Fall back to local auth
             return;
         }
 
-        // Check if we're on login page or main app
+        // Determine which page we're on and set up appropriate listeners
         if (window.location.pathname.includes('login.html') ||
             window.location.pathname === '/login.html' ||
             document.getElementById('loginForm')) {
+            // We're on the login page - set up login/signup forms
             this.setupLoginPageListeners();
         } else {
-            // We're on the main app, check authentication
+            // We're on the main app - verify user is logged in
             this.checkAndRedirect();
         }
     }
 
+    /**
+     * Fallback to Local Storage Authentication
+     *
+     * WHY: If Firebase is not available (offline, SDK not loaded, etc.),
+     * the app can still work using browser's localStorage
+     *
+     * This creates a basic user database in the browser
+     */
     fallbackToLocalStorage() {
         console.warn('Falling back to localStorage authentication');
-        // Load the old auth system as fallback
+        // Create a Map to store user data (Map allows fast lookups by username)
         this.users = new Map();
-        this.loadLocalUsers();
+        this.loadLocalUsers();  // Load any existing users from localStorage
     }
 
+    /**
+     * Load Users from Local Storage
+     *
+     * Retrieves previously registered users from browser's localStorage
+     * Users are stored as a JSON array of [username, userData] pairs
+     */
     loadLocalUsers() {
         const storedUsers = localStorage.getItem('data_bhandaar_users');
         if (storedUsers) {
             try {
                 const usersArray = JSON.parse(storedUsers);
-                this.users = new Map(usersArray);
+                this.users = new Map(usersArray);  // Convert array back to Map
                 console.log('Loaded local users:', Array.from(this.users.keys()));
             } catch (e) {
                 console.error('Error loading local users:', e);
@@ -76,52 +142,85 @@ class FirebaseAuthSystem {
         }
     }
 
+    /**
+     * Setup Login Page Event Listeners
+     *
+     * Attaches event handlers to all login/signup form elements:
+     * - Login form submission
+     * - Signup form submission
+     * - Switch between login and signup views
+     *
+     * Also clears any existing session (forces re-login)
+     */
     setupLoginPageListeners() {
+        // Get references to all form elements
         const loginForm = document.getElementById('loginForm');
         const signupForm = document.getElementById('signupForm');
         const switchToSignup = document.getElementById('switchToSignup');
         const switchToLogin = document.getElementById('switchToLogin');
 
+        // Attach submit handler to login form
         if (loginForm) {
             loginForm.addEventListener('submit', (e) => this.handleLogin(e));
         }
 
+        // Attach submit handler to signup form
         if (signupForm) {
             signupForm.addEventListener('submit', (e) => this.handleSignup(e));
         }
 
+        // Attach click handler to "Create Account" link
         if (switchToSignup) {
             switchToSignup.addEventListener('click', () => this.switchToSignup());
         }
 
+        // Attach click handler to "Back to Login" link
         if (switchToLogin) {
             switchToLogin.addEventListener('click', () => this.switchToLogin());
         }
 
-        // Clear any existing session when on login page
+        // Clear any existing session when on login page (forces fresh login)
         this.clearLocalSession();
     }
 
+    /**
+     * Switch to Signup Form
+     *
+     * Hides login form and shows signup form
+     * Used when user clicks "Create Account"
+     */
     switchToSignup() {
         const loginForm = document.getElementById('loginForm');
         const signupForm = document.getElementById('signupForm');
         if (loginForm && signupForm) {
-            loginForm.style.display = 'none';
-            signupForm.style.display = 'flex';
-            this.clearErrors();
+            loginForm.style.display = 'none';      // Hide login
+            signupForm.style.display = 'flex';     // Show signup
+            this.clearErrors();                    // Clear any error messages
         }
     }
 
+    /**
+     * Switch to Login Form
+     *
+     * Hides signup form and shows login form
+     * Used when user clicks "Back to Login"
+     */
     switchToLogin() {
         const loginForm = document.getElementById('loginForm');
         const signupForm = document.getElementById('signupForm');
         if (loginForm && signupForm) {
-            signupForm.style.display = 'none';
-            loginForm.style.display = 'flex';
-            this.clearErrors();
+            signupForm.style.display = 'none';     // Hide signup
+            loginForm.style.display = 'flex';      // Show login
+            this.clearErrors();                    // Clear any error messages
         }
     }
 
+    /**
+     * Clear Error Messages
+     *
+     * Hides all error message elements on the login page
+     * Used when switching between forms
+     */
     clearErrors() {
         const errorMessage = document.getElementById('errorMessage');
         const signupErrorMessage = document.getElementById('signupErrorMessage');

@@ -1400,6 +1400,55 @@ async function viewFile(fileId) {
                 showJsonModal(fileData);
             }
         }
+        // For SQL files - parse and display in table format
+        else if (fileData.filename.endsWith('.sql') || fileData.filetype === 'application/sql' || fileData.filetype === 'text/sql') {
+            console.log('Detected SQL file, parsing and displaying as tables');
+            console.log('File data structure:', fileData);
+
+            // Extract SQL content from file data
+            let sqlContent = '';
+
+            // Try multiple ways to extract the content
+            if (fileData.data && fileData.data instanceof ArrayBuffer) {
+                // IndexedDB stores data as ArrayBuffer
+                const decoder = new TextDecoder();
+                sqlContent = decoder.decode(fileData.data);
+            } else if (fileData.blob) {
+                // If blob is available, read it as text
+                sqlContent = await fileData.blob.text();
+            } else if (fileData.url) {
+                // Try to fetch from Blob URL
+                try {
+                    const response = await fetch(fileData.url);
+                    sqlContent = await response.text();
+                } catch (e) {
+                    console.error('Error fetching SQL content from URL:', e);
+                }
+            } else if (typeof fileData.data === 'string') {
+                // LocalStorage stores as base64 string
+                // Check if it's a data URL
+                if (fileData.data.startsWith('data:')) {
+                    // Extract base64 content and decode
+                    const base64Content = fileData.data.split(',')[1];
+                    sqlContent = atob(base64Content);
+                } else {
+                    sqlContent = fileData.data;
+                }
+            }
+
+            // Validate we have content
+            if (!sqlContent || sqlContent.trim().length === 0) {
+                console.error('Could not extract SQL content. FileData:', fileData);
+                showModal(`<p style="color: #ff4444;">Error: Could not read SQL file content.</p><p>The file appears to be empty or could not be loaded.</p><p>Check console for details.</p>`, `SQL File: ${fileData.filename}`);
+                return;
+            }
+
+            console.log('Extracted SQL content length:', sqlContent.length);
+            console.log('SQL content preview:', sqlContent.substring(0, 200));
+
+            // Parse and display the SQL file
+            displayRawSQLFile(sqlContent, fileData.filename);
+        }
         // For all other file types (PDFs, etc.) - trigger download
         else {
             downloadFile(fileId);
@@ -1508,6 +1557,478 @@ function showJsonModal(fileData) {
         </div>
     `;
     document.body.appendChild(modal);
+}
+
+/**
+ * ============================================================================
+ * RAW SQL FILE PARSER AND VIEWER
+ * ============================================================================
+ *
+ * PURPOSE:
+ * This function parses raw .sql files (containing CREATE TABLE and INSERT statements)
+ * and displays the data in a structured, tabulated format for easy viewing.
+ *
+ * WHAT IT DOES:
+ * 1. Parses CREATE TABLE statements to extract table structure (columns, types)
+ * 2. Parses INSERT INTO statements to extract the actual data rows
+ * 3. Displays everything in interactive HTML tables
+ *
+ * EXAMPLE SQL IT CAN PARSE:
+ * CREATE TABLE users (id INT, name VARCHAR(100), email VARCHAR(100));
+ * INSERT INTO users VALUES (1, 'John', 'john@example.com');
+ * INSERT INTO users VALUES (2, 'Jane', 'jane@example.com');
+ *
+ * @param {string} sqlContent - The raw SQL file content
+ * @param {string} filename - Name of the SQL file
+ */
+function displayRawSQLFile(sqlContent, filename) {
+    try {
+        // Parse the SQL content to extract tables and data
+        const parsedData = parseSQLFile(sqlContent);
+
+        if (!parsedData.tables || parsedData.tables.length === 0) {
+            throw new Error('No tables found in SQL file');
+        }
+
+        // Build the SQL viewer HTML (similar to displaySQLData but for raw SQL)
+        const sqlViewerHTML = `
+            <div class="sql-viewer">
+                <div class="sql-info">
+                    <p><strong>Tables Found:</strong> ${parsedData.tables.length}</p>
+                    <p><strong>Total Rows:</strong> ${parsedData.tables.reduce((sum, t) => sum + t.rows.length, 0)}</p>
+                </div>
+
+                <!-- Table selector dropdown -->
+                <div class="table-selector">
+                    <label for="tableSelect">Select Table:</label>
+                    <select id="tableSelect">
+                        <option value="">-- Select a table --</option>
+                        ${parsedData.tables.map((table, idx) =>
+                            `<option value="${idx}">${table.name} (${table.rows.length} rows)</option>`
+                        ).join('')}
+                    </select>
+                </div>
+
+                <!-- Table Schema Section -->
+                <div class="table-schema" id="tableSchema" style="display: none;">
+                    <h3>Schema for <span id="tableName"></span></h3>
+                    <table id="schemaTable">
+                        <thead>
+                            <tr>
+                                <th>Column Name</th>
+                                <th>Data Type</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <!-- Table Data Section -->
+                <div class="table-data" id="tableData" style="display: none;">
+                    <h3>Data (<span id="rowCount">0</span> rows)</h3>
+                    <div class="table-container">
+                        <table id="dataTable">
+                            <thead></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Raw SQL Section -->
+                <div class="raw-sql-section" id="rawSql" style="display: none;">
+                    <h3>Raw SQL</h3>
+                    <pre id="rawSqlContent" style="background: #1a1a1a; padding: 15px; border-radius: 5px; overflow-x: auto; color: #00ff00;"></pre>
+                </div>
+            </div>
+        `;
+
+        // Display in modal
+        showModal(sqlViewerHTML, `SQL File: ${filename}`);
+
+        // Add event listener for table selection
+        document.getElementById('tableSelect').addEventListener('change', function(e) {
+            const tableIdx = e.target.value;
+
+            if (tableIdx !== '') {
+                const selectedTable = parsedData.tables[parseInt(tableIdx)];
+                updateRawSQLTableView(selectedTable);
+            } else {
+                // Hide all sections
+                document.getElementById('tableSchema').style.display = 'none';
+                document.getElementById('tableData').style.display = 'none';
+                document.getElementById('rawSql').style.display = 'none';
+            }
+        });
+
+    } catch (error) {
+        console.error('Error displaying SQL file:', error);
+        showModal(`
+            <p style="color: #ff4444;">Error displaying SQL file: ${error.message}</p>
+            <p style="color: #aaa;">The SQL viewer supports:</p>
+            <ul style="text-align: left; color: #aaa; margin-left: 20px;">
+                <li>CREATE TABLE + INSERT INTO statements</li>
+                <li>INSERT statements with or without column names</li>
+                <li>Multiple value sets in single INSERT</li>
+                <li>Various SQL dialects (MySQL, PostgreSQL, SQLite)</li>
+            </ul>
+            <p style="color: #888;">Check console for details.</p>
+        `, `SQL File: ${filename}`);
+    }
+}
+
+/**
+ * PARSE SQL FILE FUNCTION - ENHANCED VERSION
+ *
+ * PURPOSE:
+ * Extracts table structures and data from ANY SQL format and presents it in table format
+ *
+ * SUPPORTS:
+ * - Standard SQL: CREATE TABLE + INSERT INTO
+ * - INSERT-only files (auto-generates schema)
+ * - INSERT with column names: INSERT INTO table (col1, col2) VALUES (...)
+ * - INSERT without column names: INSERT INTO table VALUES (...)
+ * - Multiple value sets: INSERT INTO table VALUES (...), (...), (...)
+ * - Various SQL dialects (MySQL, PostgreSQL, SQLite, etc.)
+ * - Handles NULL, quoted strings, numbers, dates
+ *
+ * PRIORITY: Always display data in structured table format, even if schema is incomplete
+ *
+ * @param {string} sqlContent - Raw SQL file content
+ * @returns {object} - Parsed data with tables array
+ */
+function parseSQLFile(sqlContent) {
+    const tables = {};
+    const result = { tables: [] };
+
+    // Validate input
+    if (!sqlContent || typeof sqlContent !== 'string') {
+        console.error('Invalid SQL content:', sqlContent);
+        return result;
+    }
+
+    // Remove comments (-- and /* */)
+    sqlContent = sqlContent.replace(/--[^\n]*/g, '');
+    sqlContent = sqlContent.replace(/\/\*[\s\S]*?\*\//g, '');
+
+    // Split into statements (by semicolon)
+    const statements = sqlContent.split(';').map(s => s.trim()).filter(s => s.length > 0);
+
+    // Process each SQL statement
+    for (const statement of statements) {
+        // ========== PARSE CREATE TABLE STATEMENTS ==========
+        const createMatch = statement.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"\[]?(\w+)[`"\]]?\s*\(([\s\S]+)\)/i);
+        if (createMatch) {
+            const tableName = createMatch[1];
+            const columnsStr = createMatch[2];
+
+            // Extract column definitions
+            const columns = [];
+            const columnLines = columnsStr.split(',').map(c => c.trim());
+
+            for (const line of columnLines) {
+                // Skip constraints like PRIMARY KEY, FOREIGN KEY, etc.
+                if (line.match(/^\s*(PRIMARY|FOREIGN|UNIQUE|CHECK|CONSTRAINT|INDEX|KEY)/i)) {
+                    continue;
+                }
+
+                // Extract column name and type (handle backticks, quotes, brackets)
+                const colMatch = line.match(/[`"\[]?(\w+)[`"\]]?\s+(\w+(?:\([^)]+\))?)/i);
+                if (colMatch) {
+                    columns.push({
+                        name: colMatch[1],
+                        type: colMatch[2]
+                    });
+                }
+            }
+
+            // Initialize table
+            tables[tableName] = {
+                name: tableName,
+                columns: columns,
+                rows: [],
+                rawSql: statement
+            };
+        }
+
+        // ========== PARSE INSERT INTO STATEMENTS ==========
+        // Handle both formats:
+        // INSERT INTO table VALUES (...)
+        // INSERT INTO table (col1, col2) VALUES (...)
+        const insertMatch = statement.match(/INSERT\s+INTO\s+[`"\[]?(\w+)[`"\]]?\s*(\([^)]+\))?\s*VALUES\s*(.+)/i);
+        if (insertMatch) {
+            const tableName = insertMatch[1];
+            const columnsPart = insertMatch[2]; // Optional column names
+            const valuesStr = insertMatch[3];
+
+            // Extract column names if specified
+            let explicitColumns = [];
+            if (columnsPart) {
+                const colStr = columnsPart.slice(1, -1); // Remove parentheses
+                explicitColumns = colStr.split(',').map(c => c.trim().replace(/[`"\[\]]/g, ''));
+            }
+
+            // Create table if not exists
+            if (!tables[tableName]) {
+                tables[tableName] = {
+                    name: tableName,
+                    columns: [],
+                    rows: [],
+                    rawSql: statement
+                };
+            }
+
+            // Extract values - handle multiple value sets
+            const valuesSets = extractValueSets(valuesStr);
+
+            for (const valueSet of valuesSets) {
+                const values = parseValueSet(valueSet);
+                tables[tableName].rows.push(values);
+
+                // Auto-generate or update column names
+                if (tables[tableName].columns.length === 0) {
+                    if (explicitColumns.length > 0) {
+                        // Use explicit column names
+                        tables[tableName].columns = explicitColumns.map(name => ({
+                            name: name,
+                            type: inferDataType(values[explicitColumns.indexOf(name)])
+                        }));
+                    } else {
+                        // Auto-generate column names
+                        for (let i = 0; i < values.length; i++) {
+                            tables[tableName].columns.push({
+                                name: `column_${i + 1}`,
+                                type: inferDataType(values[i])
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Convert tables object to array
+    result.tables = Object.values(tables);
+
+    // If no tables found, create a generic table from any data we can find
+    if (result.tables.length === 0 && sqlContent.trim().length > 0) {
+        result.tables.push(createFallbackTable(sqlContent));
+    }
+
+    return result;
+}
+
+/**
+ * EXTRACT VALUE SETS FROM INSERT STATEMENT
+ * Handles: VALUES (1,2,3), (4,5,6), (7,8,9)
+ */
+function extractValueSets(valuesStr) {
+    const sets = [];
+    let depth = 0;
+    let current = '';
+    let inQuote = false;
+    let quoteChar = '';
+
+    for (let i = 0; i < valuesStr.length; i++) {
+        const char = valuesStr[i];
+
+        // Track quotes
+        if ((char === '"' || char === "'") && !inQuote) {
+            inQuote = true;
+            quoteChar = char;
+            current += char;
+        } else if (char === quoteChar && inQuote) {
+            inQuote = false;
+            quoteChar = '';
+            current += char;
+        }
+        // Track parentheses depth
+        else if (char === '(' && !inQuote) {
+            depth++;
+            if (depth === 1) {
+                current = ''; // Start new set
+            } else {
+                current += char;
+            }
+        } else if (char === ')' && !inQuote) {
+            depth--;
+            if (depth === 0) {
+                sets.push(current.trim());
+                current = '';
+            } else {
+                current += char;
+            }
+        } else {
+            current += char;
+        }
+    }
+
+    return sets;
+}
+
+/**
+ * PARSE VALUE SET INTO INDIVIDUAL VALUES
+ * Handles: 1, 'John Doe', "2024-01-01", NULL, 3.14
+ */
+function parseValueSet(valueSet) {
+    const values = [];
+    let current = '';
+    let inQuote = false;
+    let quoteChar = '';
+
+    for (let i = 0; i < valueSet.length; i++) {
+        const char = valueSet[i];
+
+        if ((char === '"' || char === "'") && !inQuote) {
+            inQuote = true;
+            quoteChar = char;
+        } else if (char === quoteChar && inQuote && valueSet[i - 1] !== '\\') {
+            inQuote = false;
+            quoteChar = '';
+        } else if (char === ',' && !inQuote) {
+            values.push(cleanValue(current.trim()));
+            current = '';
+            continue;
+        }
+
+        current += char;
+    }
+
+    // Add last value
+    if (current.trim()) {
+        values.push(cleanValue(current.trim()));
+    }
+
+    return values;
+}
+
+/**
+ * CLEAN AND NORMALIZE VALUE
+ * Removes quotes, handles NULL, etc.
+ */
+function cleanValue(value) {
+    // Handle NULL
+    if (value.toUpperCase() === 'NULL') {
+        return 'NULL';
+    }
+
+    // Remove surrounding quotes
+    if ((value.startsWith("'") && value.endsWith("'")) ||
+        (value.startsWith('"') && value.endsWith('"'))) {
+        return value.slice(1, -1);
+    }
+
+    return value;
+}
+
+/**
+ * INFER DATA TYPE FROM VALUE
+ * Returns SQL-like data type
+ */
+function inferDataType(value) {
+    if (value === 'NULL' || value === null || value === undefined) {
+        return 'VARCHAR';
+    }
+
+    // Check if it's a number
+    if (!isNaN(value) && value.trim() !== '') {
+        if (value.includes('.')) {
+            return 'DECIMAL';
+        }
+        return 'INT';
+    }
+
+    // Check if it's a date
+    if (value.match(/^\d{4}-\d{2}-\d{2}/)) {
+        return 'DATE';
+    }
+
+    // Check if it's a timestamp
+    if (value.match(/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}/)) {
+        return 'TIMESTAMP';
+    }
+
+    // Default to VARCHAR
+    return 'VARCHAR';
+}
+
+/**
+ * CREATE FALLBACK TABLE
+ * When no proper SQL structure is found, create a simple table
+ */
+function createFallbackTable(sqlContent) {
+    return {
+        name: 'Raw_SQL_Data',
+        columns: [
+            { name: 'sql_statement', type: 'TEXT' }
+        ],
+        rows: [
+            [sqlContent.substring(0, 1000) + (sqlContent.length > 1000 ? '...' : '')]
+        ],
+        rawSql: sqlContent
+    };
+}
+
+/**
+ * UPDATE RAW SQL TABLE VIEW
+ *
+ * PURPOSE:
+ * Populates the viewer with data for a selected table
+ *
+ * @param {object} table - The table object with columns and rows
+ */
+function updateRawSQLTableView(table) {
+    // Show sections
+    document.getElementById('tableSchema').style.display = 'block';
+    document.getElementById('tableData').style.display = 'block';
+    document.getElementById('rawSql').style.display = 'block';
+
+    // Update table name
+    document.getElementById('tableName').textContent = table.name;
+    document.getElementById('rowCount').textContent = table.rows.length;
+
+    // Populate schema table
+    const schemaTbody = document.querySelector('#schemaTable tbody');
+    schemaTbody.innerHTML = '';
+
+    for (const column of table.columns) {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td>${column.name}</td>
+            <td>${column.type}</td>
+        `;
+        schemaTbody.appendChild(row);
+    }
+
+    // Populate data table
+    const dataThead = document.querySelector('#dataTable thead');
+    const dataTbody = document.querySelector('#dataTable tbody');
+    dataThead.innerHTML = '';
+    dataTbody.innerHTML = '';
+
+    // Create header row
+    const headerRow = document.createElement('tr');
+    for (const column of table.columns) {
+        const th = document.createElement('th');
+        th.textContent = column.name;
+        headerRow.appendChild(th);
+    }
+    dataThead.appendChild(headerRow);
+
+    // Create data rows
+    for (const rowData of table.rows) {
+        const row = document.createElement('tr');
+        for (let i = 0; i < table.columns.length; i++) {
+            const td = document.createElement('td');
+            td.textContent = rowData[i] !== undefined ? rowData[i] : 'NULL';
+            row.appendChild(td);
+        }
+        dataTbody.appendChild(row);
+    }
+
+    // Display raw SQL
+    if (table.rawSql) {
+        document.getElementById('rawSqlContent').textContent = table.rawSql;
+    }
 }
 
 /**
